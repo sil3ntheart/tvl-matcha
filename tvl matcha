@@ -1,0 +1,483 @@
+-- ============================================================
+-- ^.^megs tvl — Advanced Player ESP for Vampire Legends 2
+-- ============================================================
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+
+-- ============================================================
+-- STATE
+-- ============================================================
+local flags = {
+    enabled   = false,
+    name      = true,
+    character = true,
+    species   = true,
+    distance  = true,
+    maxDist   = 5000,
+    nameColor   = Color3.fromRGB(255, 255, 255),
+    charColor   = Color3.fromRGB(255, 200, 100),
+    specColor   = Color3.fromRGB(180, 140, 255),
+    customColor = Color3.fromRGB(255, 100, 255),
+    distColor   = Color3.fromRGB(120, 255, 180),
+}
+
+local espObjects  = {}
+local infoCache   = {}
+local INFO_REFRESH = 1.0
+
+-- ============================================================
+-- CONFIG
+-- ============================================================
+local CONFIG_FILE = "megs_tvl_config.json"
+local function colorToStr(c)
+    return string.format("%d,%d,%d",
+        math.floor(c.R * 255 + 0.5), math.floor(c.G * 255 + 0.5), math.floor(c.B * 255 + 0.5))
+end
+local function strToColor(s)
+    local r, g, b = s:match("^(%d+),(%d+),(%d+)$")
+    if not r then return nil end
+    return Color3.fromRGB(tonumber(r), tonumber(g), tonumber(b))
+end
+local function saveConfig()
+    local lines = {}
+    for k, v in pairs(flags) do
+        if k ~= "enabled" then
+            if typeof(v) == "Color3" then
+                lines[#lines+1] = k .. "=C:" .. colorToStr(v)
+            elseif type(v) == "boolean" then
+                lines[#lines+1] = k .. "=B:" .. tostring(v)
+            elseif type(v) == "number" then
+                lines[#lines+1] = k .. "=N:" .. tostring(v)
+            end
+        end
+    end
+    pcall(function() writefile(CONFIG_FILE, table.concat(lines, "\n")) end)
+end
+local function loadConfig()
+    if not isfile(CONFIG_FILE) then return end
+    local ok, raw = pcall(function() return readfile(CONFIG_FILE) end)
+    if not ok or not raw or raw == "" then return end
+    for line in raw:gmatch("[^\n]+") do
+        local key, tag, val = line:match("^([^=]+)=([CBN]):(.+)$")
+        if key and tag and val then
+            if tag == "C" then
+                local c = strToColor(val); if c then flags[key] = c end
+            elseif tag == "B" then
+                flags[key] = (val == "true")
+            elseif tag == "N" then
+                flags[key] = tonumber(val) or flags[key]
+            end
+        end
+    end
+end
+loadConfig()
+
+local savePending = false
+local function scheduleSave()
+    if savePending then return end
+    savePending = true
+    task.spawn(function()
+        task.wait(0.4)
+        savePending = false
+        saveConfig()
+    end)
+end
+
+-- ============================================================
+-- DRAWING
+-- ============================================================
+local function newText(size)
+    local t = Drawing.new("Text")
+    t.Size = size or 14
+    t.Center = true
+    t.Outline = true
+    t.Visible = false
+    return t
+end
+local function removeAll(tbl)
+    if not tbl then return end
+    for _, d in pairs(tbl) do
+        if d and d.Remove then pcall(function() d:Remove() end) end
+    end
+end
+local function createESP(player)
+    if player == LocalPlayer or espObjects[player] then return end
+    espObjects[player] = {
+        name      = newText(14),
+        character = newText(14),
+        species   = newText(13),
+        dist      = newText(12),
+    }
+    infoCache[player] = {
+        characterName = nil,
+        species       = "?",
+        isCustom      = false,
+        lastRefresh   = 0,
+    }
+end
+local function hidePlayer(obj)
+    if not obj then return end
+    for _, drawing in pairs(obj) do
+        if drawing then drawing.Visible = false end
+    end
+end
+local function hideAllESP()
+    for _, obj in pairs(espObjects) do hidePlayer(obj) end
+end
+local function removeESP(player)
+    if not espObjects[player] then return end
+    removeAll(espObjects[player])
+    espObjects[player] = nil
+    infoCache[player] = nil
+end
+
+pcall(function()
+    for _, p in ipairs(Players:GetPlayers()) do createESP(p) end
+end)
+pcall(function()
+    if Players.PlayerAdded then Players.PlayerAdded:Connect(createESP) end
+end)
+pcall(function()
+    if Players.PlayerRemoving then Players.PlayerRemoving:Connect(removeESP) end
+end)
+
+task.spawn(function()
+    while true do
+        task.wait(1)
+        local ok, list = pcall(function() return Players:GetPlayers() end)
+        if ok and list then
+            local seen = {}
+            for _, p in ipairs(list) do
+                seen[p] = true
+                if not espObjects[p] and p ~= LocalPlayer then createESP(p) end
+            end
+            for p in pairs(espObjects) do
+                if not seen[p] then removeESP(p) end
+            end
+        end
+    end
+end)
+
+-- ============================================================
+-- CHARACTER SPECIES MAP
+-- ============================================================
+local CHARACTER_SPECIES = {
+    -- Originals
+    ["Klaus Mikaelson"]      = "Original",
+    ["Elijah Mikaelson"]     = "Original",
+    ["Rebekah Mikaelson"]    = "Original",
+    ["Kol Mikaelson"]        = "Original",
+    ["Finn Mikaelson"]       = "Original",
+    ["Mikael"]               = "Original",
+    ["Mikael Mikaelson"]     = "Original",
+
+    -- Prime Immortals
+    ["Silas"]                = "Immortal Psychic",
+    ["Amara"]                = "Immortal",
+
+    -- Upgraded Originals
+    ["Marcel Gerard"]        = "Upgraded Original",
+    ["Lucien Castle"]        = "Upgraded Original",
+
+    -- Vampires
+    ["Tristan de Martel"]    = "Vampire",
+    ["Aurora de Martel"]     = "Vampire",
+    ["Aya Al-Rashid"]        = "Vampire",
+    ["Stefan Salvatore"]     = "Vampire",
+    ["Damon Salvatore"]      = "Vampire",
+    ["Elena Gilbert"]        = "Vampire",
+    ["Caroline Forbes"]      = "Vampire",
+    ["Enzo"]                 = "Vampire",
+    ["Katherine Pierce"]     = "Vampire",
+    ["Vicki Donovan"]        = "Vampire",
+    ["Isobel Flemming"]      = "Vampire",
+    ["Alaric Saltzman"]      = "Vampire",
+    ["Sebastian"]            = "Vampire",
+    ["Sebastian the Merciless"] = "Vampire",
+    ["Sabastian the Mercalis"]  = "Vampire",
+
+    -- Heretics
+    ["Dark Josie"]           = "Heretic",
+    ["Kai Parker"]           = "Heretic",
+    ["Nora Hildegard"]       = "Heretic",
+    ["Mary Louise"]          = "Heretic",
+    ["Valerie"]              = "Heretic",
+    ["Valerie Tulle"]        = "Heretic",
+    ["Malcolm"]              = "Heretic",
+    ["Beau"]                 = "Heretic",
+    ["Oscar"]                = "Heretic",
+
+    -- Tribrid
+    ["Hope Mikaelson"]       = "Tribrid",
+
+    -- Siphoners
+    ["Josie Saltzman"]       = "Siphoner",
+    ["Lizzie Saltzman"]      = "Siphoner",
+
+    -- Witches
+    ["Freya Mikaelson"]      = "Witch",
+    ["Esther Mikaelson"]     = "Witch",
+    ["Dahlia"]               = "Witch",
+    ["Qetsiyah"]             = "Witch",
+    ["Bonnie Bennett"]       = "Witch",
+    ["Lucy Bennett"]         = "Witch",
+    ["Cleo Sowande"]         = "Witch",
+    ["Vincent Griffith"]     = "Witch",
+    ["Davina Claire"]        = "Witch",
+    ["Sophie Deveraux"]      = "Witch",
+    ["Céleste"]              = "Witch",
+    ["Liv Parker"]           = "Witch",
+    ["Luke Parker"]          = "Witch",
+    ["Grams"]                = "Witch",
+    ["Sheila Bennett"]       = "Witch",
+    ["Papa Tunde"]           = "Witch",
+    ["Agnes"]                = "Witch",
+
+    -- Werewolves
+    ["Jackson Kenner"]       = "Werewolf",
+    ["Eve"]                  = "Werewolf",
+    ["Rafael Waithe"]        = "Werewolf",
+    ["Jed"]                  = "Werewolf",
+    ["Finch"]                = "Werewolf",
+    ["Keelin"]               = "Werewolf",
+
+    -- Phoenix
+    ["Landon Kirby"]         = "Phoenix",
+
+    -- Hybrid
+    ["Hayley Marshall"]      = "Hybrid",
+    ["Tyler Lockwood"]       = "Hybrid",
+
+    -- Mortals
+    ["Matt Donovan"]         = "Mortal",
+    ["Jeremy Gilbert"]       = "Mortal",
+    ["Sheriff Forbes"]       = "Mortal",
+    ["Atticus Shane"]        = "Mortal",
+    ["April Young"]          = "Mortal",
+    ["Jenna Sommers"]        = "Mortal",
+}
+
+local FACE_SPECIES = {
+    VampireFace = "Vampire",  VampBiteFace = "Vampire",
+    BiteFace = "Vampire",     BleedFace = "Vampire",
+    HybridFace = "Hybrid",    HybridBiteFace = "Hybrid",
+    WolfFace = "Werewolf",    WolfBiteFace = "Werewolf",
+    TribridFace = "Tribrid",  TribridBiteFace = "Tribrid",
+    PhoenixFace = "Phoenix",
+    DarkJosieFace = "Heretic",
+    MuseFace = "Muse",        ScreamFace = "Scream",
+    PosessedFace = "Possessed",
+    DesiccatedFace = "Desiccated",
+    SleepFace = "Sleeping",
+}
+
+local IGNORE_FACES = {
+    DefaultFace = true, _eyes = true, ScreamBlood = true, Face = true,
+    BloodFace = true, HeadWeld = true,
+}
+
+local function getSpeciesInfo(player, character)
+    if not character then return "?", false end
+
+    local cname = nil
+    if player then
+        local ok, v = pcall(function() return player:GetAttribute("CharacterName") end)
+        if ok then cname = v end
+    end
+
+    if cname and cname ~= "" then
+        if CHARACTER_SPECIES[cname] then
+            return CHARACTER_SPECIES[cname], false
+        end
+        return "Custom", true
+    end
+
+    if player and player.Team then
+        local tn = player.Team.Name
+        if tn and tn ~= "" and tn ~= "Neutral" then return tn, false end
+    end
+
+    local head = character:FindFirstChild("Head")
+    if head then
+        for _, d in ipairs(head:GetChildren()) do
+            if d:IsA("Decal") and not IGNORE_FACES[d.Name] and FACE_SPECIES[d.Name] then
+                return FACE_SPECIES[d.Name], false
+            end
+        end
+    end
+
+    local faces = character:FindFirstChild("Faces")
+    if faces then
+        for _, d in ipairs(faces:GetChildren()) do
+            if d:IsA("Decal") and FACE_SPECIES[d.Name] then
+                return FACE_SPECIES[d.Name], false
+            end
+        end
+    end
+
+    return "?", false
+end
+
+local function getCharacterName(player)
+    if not player then return nil end
+    local ok, cname = pcall(function() return player:GetAttribute("CharacterName") end)
+    if ok and cname and cname ~= "" then return cname end
+    return nil
+end
+
+-- ============================================================
+-- RENDER LOOP
+-- ============================================================
+local function renderLoop()
+    if not flags.enabled then return end
+
+    local camera = workspace.CurrentCamera
+    if not camera then return end
+    local camPos = camera.CFrame.Position
+    local now = os.clock()
+
+    for player, obj in pairs(espObjects) do
+        local char = player.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+
+        if root and humanoid and humanoid.Health > 0 then
+            local worldPos = root.Position
+            local dist = (camPos - worldPos).Magnitude
+
+            if dist <= flags.maxDist then
+                local screenPos, onScreen = WorldToScreen(worldPos)
+
+                if onScreen and screenPos then
+                    local info = infoCache[player]
+                    if info and now >= info.lastRefresh then
+                        info.lastRefresh = now + INFO_REFRESH
+                        info.characterName = getCharacterName(player) or info.characterName
+                        local sp, isCustom = getSpeciesInfo(player, char)
+                        info.species = sp
+                        info.isCustom = isCustom
+                    end
+
+                    local size = math.clamp(1500 / math.max(dist, 1), 20, 250)
+                    local topY = screenPos.Y - size * 0.5
+                    local lineOffset = 0
+
+                    -- Character Name
+                    if flags.character and info and info.characterName then
+                        obj.character.Color = flags.charColor
+                        obj.character.Position = Vector2.new(screenPos.X, topY - 18 + lineOffset)
+                        obj.character.Text = info.characterName
+                        obj.character.Visible = true
+                        lineOffset = lineOffset + 16
+                    else
+                        obj.character.Visible = false
+                    end
+
+                    -- Species / Custom
+                    if flags.species and info then
+                        if info.isCustom then
+                            obj.species.Color = flags.customColor
+                        else
+                            obj.species.Color = flags.specColor
+                        end
+                        obj.species.Position = Vector2.new(screenPos.X, topY - 18 + lineOffset)
+                        obj.species.Text = "[" .. (info.species or "?") .. "]"
+                        obj.species.Visible = true
+                        lineOffset = lineOffset + 15
+                    else
+                        obj.species.Visible = false
+                    end
+
+                    -- Username
+                    if flags.name then
+                        obj.name.Color = flags.nameColor
+                        obj.name.Position = Vector2.new(screenPos.X, topY - 18 + lineOffset)
+                        obj.name.Text = player.Name
+                        obj.name.Visible = true
+                        lineOffset = lineOffset + 15
+                    else
+                        obj.name.Visible = false
+                    end
+
+                    -- Distance
+                    if flags.distance then
+                        obj.dist.Color = flags.distColor
+                        obj.dist.Position = Vector2.new(screenPos.X, topY - 18 + lineOffset)
+                        obj.dist.Text = tostring(math.floor(dist)) .. " studs"
+                        obj.dist.Visible = true
+                    else
+                        obj.dist.Visible = false
+                    end
+                else
+                    hidePlayer(obj)
+                end
+            else
+                hidePlayer(obj)
+            end
+        else
+            hidePlayer(obj)
+        end
+    end
+end
+
+local renderOK = pcall(function()
+    RunService.RenderStepped:Connect(renderLoop)
+end)
+if not renderOK then
+    task.spawn(function()
+        while true do
+            task.wait(1 / 60)
+            pcall(renderLoop)
+        end
+    end)
+end
+
+-- ============================================================
+-- UI
+-- ============================================================
+UI.AddTab("^.^megs tvl", function(tab)
+    local esp = tab:Section("ESP", "Left")
+
+    esp:Toggle("tvl_enabled",   "Enable ESP",      false,           function(on) flags.enabled = on; if not on then hideAllESP() end; scheduleSave() end)
+    esp:Toggle("tvl_character", "Character Name",  flags.character, function(on) flags.character = on; scheduleSave() end)
+    esp:Tip("Shows who the player is (e.g. Klaus Mikaelson)")
+    esp:Toggle("tvl_species",   "Species",         flags.species,   function(on) flags.species = on;   scheduleSave() end)
+    esp:Toggle("tvl_name",      "Username",        flags.name,      function(on) flags.name = on;      scheduleSave() end)
+    esp:Toggle("tvl_distance",  "Distance",        flags.distance,  function(on) flags.distance = on;  scheduleSave() end)
+    esp:SliderInt("tvl_maxdist","Max Distance",    100, 20000, flags.maxDist, function(v) flags.maxDist = v; scheduleSave() end)
+
+    -- Colors
+    local colors = tab:Section("Colors", "Right")
+
+    colors:Toggle("tvl_charcollor_on", "Character Name Color", true)
+    colors:ColorPicker("tvl_charcollor", flags.charColor.R, flags.charColor.G, flags.charColor.B, 1,
+        function(c) flags.charColor = c; scheduleSave() end)
+
+    colors:Toggle("tvl_speccolor_on",  "Species Color", true)
+    colors:ColorPicker("tvl_speccolor", flags.specColor.R, flags.specColor.G, flags.specColor.B, 1,
+        function(c) flags.specColor = c; scheduleSave() end)
+
+    colors:Toggle("tvl_customcolor_on", "Custom Character Color", true)
+    colors:ColorPicker("tvl_customcolor", flags.customColor.R, flags.customColor.G, flags.customColor.B, 1,
+        function(c) flags.customColor = c; scheduleSave() end)
+    colors:Tip("Color used for the [Custom] tag")
+
+    colors:Toggle("tvl_namecolor_on",  "Username Color", true)
+    colors:ColorPicker("tvl_namecolor", flags.nameColor.R, flags.nameColor.G, flags.nameColor.B, 1,
+        function(c) flags.nameColor = c; scheduleSave() end)
+
+    colors:Toggle("tvl_distcolor_on",  "Distance Color", true)
+    colors:ColorPicker("tvl_distcolor", flags.distColor.R, flags.distColor.G, flags.distColor.B, 1,
+        function(c) flags.distColor = c; scheduleSave() end)
+
+    local actions = tab:Section("Actions", "Right")
+    actions:Button("Save Now", function()
+        saveConfig()
+        notify("Config saved", "^.^megs tvl", 2)
+    end)
+end)
+
+pcall(function() notify("ESP loaded", "^.^megs tvl", 3) end)
