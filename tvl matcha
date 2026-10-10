@@ -1,5 +1,5 @@
 -- ============================================================
--- ^.^megs tvl — Advanced Player ESP for Vampire Legends 2
+-- ^.^meg tvl — Advanced Player ESP for Vampire Legends 2
 -- ============================================================
 
 local Players = game:GetService("Players")
@@ -438,7 +438,7 @@ end
 -- ============================================================
 -- UI
 -- ============================================================
-UI.AddTab("^.^megs tvl", function(tab)
+UI.AddTab("^.^meg tvl", function(tab)
     local esp = tab:Section("ESP", "Left")
 
     esp:Toggle("tvl_enabled",   "Enable ESP",      false,           function(on) flags.enabled = on; if not on then hideAllESP() end; scheduleSave() end)
@@ -476,8 +476,8 @@ UI.AddTab("^.^megs tvl", function(tab)
     local actions = tab:Section("Actions", "Right")
     actions:Button("Save Now", function()
         saveConfig()
-        notify("Config saved", "^.^megs tvl", 2)
+        notify("Config saved", "^.^meg tvl", 2)
     end)
 end)
 
-pcall(function() notify("ESP loaded", "^.^megs tvl", 3) end)
+pcall(function() notify("ESP loaded", "^.^meg tvl", 3) end)
