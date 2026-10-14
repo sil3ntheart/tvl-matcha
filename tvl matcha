@@ -1,32 +1,60 @@
--- ============================================================
--- ^.^meg tvl — Player ESP + Plant ESP + Gem ESP + Cure ESP
--- PATCH NOTES
---   [1] notify() arg order fixed
---   [2] Cure ESP Drawing leak fixed
---   [3] resetPlants/resetGems clear entries + Remove() drawings
---   [4] Species color lookup deterministic + whole-word fallback
---   [5] loadConfig errors warn() instead of silent pcall
---   [6] Hunters (SpecieType == "Hunter") display as Mortal (green)
---   [7] Body-jumpers (Esther) display as BodyJumpOrigin name + color
--- ============================================================
-
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local LocalPlayer = Players.LocalPlayer
 local floor, clamp, max, tick = math.floor, math.clamp, math.max, tick
 
-local flags = { enabled=false, name=true, character=true, distance=true, maxDist=5000 }
+local flags = { enabled=false, name=true, character=true, inventory=true, distance=true, maxDist=5000 }
 local plantFlags = { enabled=false, showDist=true, maxDist=3000,
     Nightshade=true, Wolfsbane=true, Yarrow=true, Mooncap=true, Senia=true,
     Aerpine=true, Derrida=true, Arcanith=true, Sanguinia=true, Perennia=true, Vampite=true }
 local gemFlags = { enabled=false, showDist=true, maxDist=3000,
     ClearQuartz=true, Bloodstone=true, BlackCrystal=true, Peridot=true }
-local cureFlags = { enabled=false, notify=true }
+local cureFlags = { enabled=false }
 
-local espObjects, infoCache = {}, {}
-local INFO_REFRESH = 0.5
-local cureObjects = {}
-local lastCureUp = false
+local PLAYER_BATCH        = 4
+local WORLD_BATCH         = 8
+local DIST_TEXT_MIN_DELTA = 1
+
+local IMPORTANT_ITEMS = {
+    TheCure                     = "The Cure",
+    QetsiyahCure                = "The Cure",
+    WhiteOakStake               = "White Oak",
+    MikaelWhiteOakStake         = "White Oak",
+    IndestructibleWhiteOakStake = "Indestructible White Oak",
+    GoldenArrow                 = "Gold Arrow",
+    RedOakStake                 = "Red Oak",
+}
+
+local NAME_OVERRIDES = {
+    ["Dark Josie"]            = "Bonnie",
+    ["Josie"]                 = "Bonnie",
+    ["Josie Saltzman"]        = "Bonnie",
+    ["Dark Josie Saltzman"]   = "Bonnie",
+    ["Milton 'MG' Greasley"]  = "Vampire",
+    ["Milton Greasley"]       = "Vampire",
+}
+
+local DRAW_COUNT = 0
+local DRAW_CAP = 1800
+
+local function safeNewText(size)
+    if DRAW_COUNT >= DRAW_CAP then return nil end
+    local ok, t = pcall(function() return Drawing.new("Text") end)
+    if not ok or not t then return nil end
+    DRAW_COUNT = DRAW_COUNT + 1
+    t.Size = size or 14
+    t.Center = true
+    t.Outline = true
+    t.Visible = false
+    return t
+end
+
+local function safeRemove(d)
+    if not d then return end
+    pcall(function() d:Remove() end)
+    DRAW_COUNT = DRAW_COUNT - 1
+    if DRAW_COUNT < 0 then DRAW_COUNT = 0 end
+end
 
 local CONFIG_FILE = "megs_tvl_config.json"
 
@@ -48,7 +76,8 @@ local function saveConfig()
     serialize("pl_", plantFlags, lines, true)
     serialize("g_", gemFlags, lines, true)
     serialize("c_", cureFlags, lines, false)
-    pcall(function() writefile(CONFIG_FILE, table.concat(lines, "\n")) end)
+    local ok, err = pcall(function() writefile(CONFIG_FILE, table.concat(lines, "\n")) end)
+    if not ok then warn("[tvl] config save failed:", err) end
 end
 
 local function loadConfig()
@@ -86,23 +115,24 @@ local function scheduleSave()
         saveConfig()
     end)
 end
+
 local SPECIES_COLORS = {
     ["Vampire"]=Color3.fromRGB(220,70,70), ["Original"]=Color3.fromRGB(220,70,70),
     ["Upgraded Original"]=Color3.fromRGB(220,70,70), ["Transitioning Vampire"]=Color3.fromRGB(220,70,70),
-    ["Werewolf"]=Color3.fromRGB(220,180,40), ["Hybrid"]=Color3.fromRGB(200,130,60),
-    ["Transitioning Hybrid"]=Color3.fromRGB(200,130,60),
-    ["Witch"]=Color3.fromRGB(160,110,230), ["Siphoner"]=Color3.fromRGB(150,120,200),
-    ["Heretic"]=Color3.fromRGB(200,100,180), ["Werewitch"]=Color3.fromRGB(220,130,130),
+    ["Werewolf"]=Color3.fromRGB(220,180,40), ["Hybrid"]=Color3.fromRGB(220,180,40),
+    ["Transitioning Hybrid"]=Color3.fromRGB(220,180,40),
+    ["Witch"]=Color3.fromRGB(160,110,230), ["Siphoner"]=Color3.fromRGB(160,110,230),
+    ["Heretic"]=Color3.fromRGB(200,100,180), ["Werewitch"]=Color3.fromRGB(200,100,180),
     ["Bonnie"]=Color3.fromRGB(140,90,220), ["Esther"]=Color3.fromRGB(70,170,90),
     ["Freya"]=Color3.fromRGB(40,110,190), ["Qetsiyah"]=Color3.fromRGB(110,180,230),
     ["Cleo"]=Color3.fromRGB(240,180,50), ["Davina"]=Color3.fromRGB(210,80,150),
-    ["Tribrid"]=Color3.fromRGB(50,130,255), ["Immortal"]=Color3.fromRGB(120,70,170),
-    ["Immortal Psychic"]=Color3.fromRGB(120,70,170), ["Phoenix"]=Color3.fromRGB(255,140,40),
+    ["Tribrid"]=Color3.fromRGB(50,130,255), ["Immortal"]=Color3.fromRGB(140,90,220),
+    ["Immortal Psychic"]=Color3.fromRGB(140,90,220), ["Phoenix"]=Color3.fromRGB(255,140,40),
     ["Mortal"]=Color3.fromRGB(50,180,70),
-    ["Hunter"]=Color3.fromRGB(50,180,70),   -- hunters show as mortal green
+    ["Hunter"]=Color3.fromRGB(50,180,70),
     ["Custom"]=Color3.fromRGB(255,255,255), ["?"]=Color3.fromRGB(200,200,200),
 }
-local BODYJUMP_UNKNOWN_COLOR = Color3.fromRGB(230, 80, 200)  -- magenta for unknown possessors
+local BODYJUMP_UNKNOWN_COLOR = Color3.fromRGB(230, 80, 200)
 
 local SPECIES_LOWER = {}
 for key, col in pairs(SPECIES_COLORS) do SPECIES_LOWER[key:lower()] = col end
@@ -127,7 +157,6 @@ local speciesColorCache = {}
 local function getColorForSpecies(species)
     if not species or species == "" then return SPECIES_COLORS["?"] end
 
-    -- Body-jump generic: "BodyJump:<originName>"
     if species:sub(1, 9) == "BodyJump:" then
         local origin = species:sub(10)
         local hit = SPECIES_COLORS[origin] or SPECIES_LOWER[origin:lower()]
@@ -186,75 +215,97 @@ local CHARACTER_SPECIES = {
     ["Silas"]="Immortal Psychic", ["Amara"]="Immortal", ["Hope Mikaelson"]="Tribrid",
     ["Marcel Gerard"]="Upgraded Original", ["Marcel Guraude"]="Upgraded Original",
     ["Lucien Castle"]="Upgraded Original",
+    ["Sebastian The Merciless"]="Vampire",
 }
 
-local PLANT_MODELS = {
-    NightshadePlant="Nightshade", WolfsbanePlant="Wolfsbane", YarrowPlant="Yarrow",
-    MooncapPlant="Mooncap", SeniaPlant="Senia", AerpinePlant="Aerpine",
-    DerridaPlant="Derrida", ArcanithPlant="Arcanith", SanguiniaPlant="Sanguinia",
-    PerenniaPlant="Perennia", VampitePlant="Vampite",
-}
-local PLANT_TEXT_COLOR = Color3.fromRGB(255,255,255)
-local GEM_TEXT_COLOR = Color3.fromRGB(255,255,255)
-local GEM_MODELS = {
-    ClearQuartzGem={name="Clear Quartz",flag="ClearQuartz"},
-    BloodstoneGem={name="Bloodstone",flag="Bloodstone"},
-    BlackCrystalGem={name="Black Crystal",flag="BlackCrystal"},
-    PeridotGem={name="Peridot",flag="Peridot"},
-}
-local BASE_CLASSES = {
-    Part=true, MeshPart=true, UnionOperation=true, NegateOperation=true,
-    WedgePart=true, CornerWedgePart=true, TrussPart=true, SpawnLocation=true,
-    Seat=true, VehicleSeat=true, Platform=true,
-}
+local function trim(s) return s:gsub("^%s+",""):gsub("%s+$","") end
 
 local function getCharacterName(player)
     if not player then return nil end
-    local ok, c = pcall(function() return player:GetAttribute("CharacterName") end)
-    if ok and type(c) == "string" and c ~= "" then return c end
-    local ok2, d = pcall(function() return player:GetAttribute("DisplayName") end)
-    if ok2 and type(d) == "string" and d ~= "" then return d end
+    local c = player:GetAttribute("CharacterName")
+    if type(c) == "string" and c ~= "" then return trim(c) end
+    local d = player:GetAttribute("DisplayName")
+    if type(d) == "string" and d ~= "" then return trim(d) end
     return nil
 end
 
-local function getSpecies(player, character)
+local function getSpecies(player, character, preName)
     if not character then return "?" end
 
-    -- [7] Body-jump override FIRST: Esther (and any possessor) exposes her real
-    -- name under BodyJumpOrigin while BodyJumped == true. Route through the
-    -- same resolution tables as normal so "Esther Mikaelson" -> "Esther".
-    local okBJ, bodyJumped = pcall(function() return player:GetAttribute("BodyJumped") end)
-    if okBJ and bodyJumped then
-        local okBO, origin = pcall(function() return player:GetAttribute("BodyJumpOrigin") end)
-        if okBO and type(origin) == "string" and origin ~= "" then
+    local cname = preName or getCharacterName(player)
+
+    if cname and cname ~= "" then
+        local ov = NAME_OVERRIDES[cname]
+        if ov then return ov end
+    end
+
+    if player:GetAttribute("AstralProjection") then
+        if cname and cname ~= "" then
+            if SPECIAL_WITCHES[cname] then return SPECIAL_WITCHES[cname] end
+            if CHARACTER_SPECIES[cname] then return CHARACTER_SPECIES[cname] end
+        end
+    end
+
+    if player:GetAttribute("BodyJumped") then
+        local origin = player:GetAttribute("BodyJumpOrigin")
+        if type(origin) == "string" and origin ~= "" then
             if SPECIAL_WITCHES[origin] then return SPECIAL_WITCHES[origin] end
             if CHARACTER_SPECIES[origin] then return CHARACTER_SPECIES[origin] end
             return "BodyJump:" .. origin
         end
     end
 
-    local ok, specType = pcall(function() return character:GetAttribute("SpecieType") end)
-    if not ok then specType = nil end
+    local specType = character:GetAttribute("SpecieType")
 
-    if specType and specType ~= "" then
-        -- [6] Hunter shows as Mortal (green).
+    if type(specType) == "string" and specType ~= "" then
         if specType == "Hunter" then return "Mortal" end
         if specType == "Witch" then
-            local cname = getCharacterName(player)
+            if character:GetAttribute("Siphoner") then return "Siphoner" end
             if cname and SPECIAL_WITCHES[cname] then return SPECIAL_WITCHES[cname] end
-            local ok2, siph = pcall(function() return character:GetAttribute("Siphoner") end)
-            if ok2 and siph then return "Siphoner" end
         end
         return specType
     end
 
-    local cname = getCharacterName(player)
     if cname and cname ~= "" then
+        if SPECIAL_WITCHES[cname] then return SPECIAL_WITCHES[cname] end
         return CHARACTER_SPECIES[cname] or "Custom"
     end
     return "?"
 end
+
+local function getPlayerItems(player)
+    local found = {}
+    local seen = {}
+    local char = player.Character
+    local bp = player:FindFirstChild("Backpack")
+
+    local function scanContainer(container)
+        if not container then return end
+        local kids = container:GetChildren()
+        for i = 1, #kids do
+            local display = IMPORTANT_ITEMS[kids[i].Name]
+            if display and not seen[display] then
+                seen[display] = true
+                found[#found+1] = display
+            end
+        end
+    end
+
+    scanContainer(bp)
+    scanContainer(char)
+
+    local n = #found
+    if n == 0 then return "" end
+    if n > 1 then table.sort(found) end
+    local parts = {}
+    for i = 1, n do
+        parts[i] = "[" .. found[i] .. "]"
+    end
+    return table.concat(parts, " ")
+end
+
 local COLORS = { name=Color3.fromRGB(255,255,255), distance=Color3.fromRGB(120,255,180) }
+local ITEM_COLOR = Color3.fromRGB(255,255,255)
 local visCache, textCache, colorCache = setmetatable({},{__mode="k"}), setmetatable({},{__mode="k"}), setmetatable({},{__mode="k"})
 local posX, posY = setmetatable({},{__mode="k"}), setmetatable({},{__mode="k"})
 
@@ -266,26 +317,54 @@ local function setPos(d,x,y)
     if posX[d]~=x or posY[d]~=y then posX[d]=x; posY[d]=y; d.Position=Vector2.new(x,y) end
 end
 local function newText(size)
-    local t = Drawing.new("Text")
-    t.Size=size or 14; t.Center=true; t.Outline=true; t.Visible=false
-    visCache[t]=false
+    local t = safeNewText(size)
+    if t then visCache[t] = false end
     return t
 end
 local function removeAll(tbl)
     if not tbl then return end
-    for _,d in pairs(tbl) do if d and d.Remove then pcall(function() d:Remove() end) end end
+    for _,d in pairs(tbl) do if d then safeRemove(d) end end
+end
+
+local espObjects, infoCache = {}, {}
+local playerList = {}
+local INFO_REFRESH = 0.5
+local ITEM_REFRESH = 1.0
+
+local function rebuildPlayerList()
+    local n = 0
+    for p in pairs(espObjects) do
+        n = n + 1
+        playerList[n] = p
+    end
+    for i = n + 1, #playerList do playerList[i] = nil end
 end
 
 local function createESP(player)
     if player == LocalPlayer or espObjects[player] then return end
-    local obj = { name=newText(14), character=newText(14), dist=newText(12) }
+    local obj = {
+        name=newText(14),
+        character=newText(14),
+        items=newText(11),
+        dist=newText(12),
+    }
+    if not obj.name or not obj.character or not obj.items or not obj.dist then
+        if obj.name then safeRemove(obj.name) end
+        if obj.character then safeRemove(obj.character) end
+        if obj.items then safeRemove(obj.items) end
+        if obj.dist then safeRemove(obj.dist) end
+        return
+    end
     setColor(obj.name, COLORS.name)
     setColor(obj.dist, COLORS.distance)
+    setColor(obj.items, ITEM_COLOR)
     espObjects[player] = obj
     infoCache[player] = {
         username=player.Name, characterName=nil, species="?", color=SPECIES_COLORS["?"],
-        display="[?]", char=nil, root=nil, hum=nil, lastDist=-1, distText="", lastRefresh=0,
+        display="[?]", itemsText="", char=nil, root=nil, hum=nil,
+        lastDist=-1, distText="", lastRefresh=0, lastItemRefresh=0,
     }
+    rebuildPlayerList()
 end
 
 local function hidePlayer(obj)
@@ -296,7 +375,9 @@ local function hideAllESP() for _,obj in pairs(espObjects) do hidePlayer(obj) en
 local function removeESP(player)
     if not espObjects[player] then return end
     removeAll(espObjects[player])
-    espObjects[player]=nil; infoCache[player]=nil
+    espObjects[player]=nil
+    infoCache[player]=nil
+    rebuildPlayerList()
 end
 
 pcall(function() for _,p in ipairs(Players:GetPlayers()) do createESP(p) end end)
@@ -305,7 +386,7 @@ pcall(function() if Players.PlayerRemoving then Players.PlayerRemoving:Connect(r
 
 task.spawn(function()
     while true do
-        task.wait(2)
+        task.wait(4)
         local ok, list = pcall(function() return Players:GetPlayers() end)
         if ok and list then
             local seen = {}
@@ -329,82 +410,187 @@ local function refreshInfo(player, info, now)
         info.root, info.hum = nil, nil
     end
 
-    -- [7] Body-jump name override for the label
-    local bjName = nil
-    local okBJ, bodyJumped = pcall(function() return player:GetAttribute("BodyJumped") end)
-    if okBJ and bodyJumped then
-        local okBO, origin = pcall(function() return player:GetAttribute("BodyJumpOrigin") end)
-        if okBO and type(origin) == "string" and origin ~= "" then bjName = origin end
+    local isBodyJumped = player:GetAttribute("BodyJumped")
+    local bodyJumpOrigin = nil
+    if isBodyJumped then
+        local origin = player:GetAttribute("BodyJumpOrigin")
+        if type(origin) == "string" and origin ~= "" then bodyJumpOrigin = origin end
     end
-    info.characterName = bjName or getCharacterName(player) or info.characterName
+    local resolvedName = bodyJumpOrigin or getCharacterName(player)
+    info.characterName = resolvedName or info.characterName
 
-    local species = getSpecies(player, char)
-    info.species = species
-    info.color = getColorForSpecies(species)
+    if flags.character then
+        local species = getSpecies(player, char, resolvedName)
+        info.species = species
+        info.color = getColorForSpecies(species)
+    end
 
     local displayName = info.characterName
     if not displayName or displayName == "" then displayName = "[?]" end
     displayName = DISPLAY_ALIASES[displayName] or displayName
-    if TRANSITIONING[species] then displayName = displayName .. " (transitioning)" end
+    if flags.character and TRANSITIONING[info.species] then
+        displayName = displayName .. " (transitioning)"
+    end
+
+    if player:GetAttribute("AstralProjection") then
+        displayName = displayName .. " (astral)"
+    end
+
     info.display = displayName
 end
 
-local function updatePlayers(camPos, now)
-    local maxD, showChar, showName, showDist = flags.maxDist, flags.character, flags.name, flags.distance
-    for player, obj in pairs(espObjects) do
-        local info = infoCache[player]
-        if info then
-            if now >= info.lastRefresh then refreshInfo(player, info, now) end
-            local visible = false
-            local root, hum = info.root, info.hum
-            if root and hum and root.Parent and hum.Health > 0 then
-                local worldPos = root.Position
-                local dist = (camPos - worldPos).Magnitude
-                if dist <= maxD then
-                    local sp, onScreen = WorldToScreen(worldPos)
-                    if onScreen and sp then
-                        visible = true
-                        local x = sp.X
-                        local y = sp.Y - clamp(1500/max(dist,1), 20, 250)*0.5 - 18
-                        if showChar then
-                            setColor(obj.character, info.color)
-                            setText(obj.character, info.display)
-                            setPos(obj.character, x, y)
-                            setVisible(obj.character, true)
-                            y = y + 16
-                        else setVisible(obj.character, false) end
-                        if showName then
-                            setText(obj.name, info.username)
-                            setPos(obj.name, x, y)
-                            setVisible(obj.name, true)
-                            y = y + 15
-                        else setVisible(obj.name, false) end
-                        if showDist then
-                            local fd = floor(dist)
-                            if fd ~= info.lastDist then
-                                info.lastDist = fd
-                                info.distText = fd .. " studs"
+local function refreshItems(player, info, now)
+    info.lastItemRefresh = now + ITEM_REFRESH
+    if not flags.inventory then
+        info.itemsText = ""
+        return
+    end
+    info.itemsText = getPlayerItems(player)
+end
+
+local function isInFront(camPos, camLook, worldPos, slack)
+    local dx = worldPos.X - camPos.X
+    local dy = worldPos.Y - camPos.Y
+    local dz = worldPos.Z - camPos.Z
+    return (dx*camLook.X + dy*camLook.Y + dz*camLook.Z) > -slack
+end
+
+local playerCursor = 0
+
+local function updatePlayersBatch(camPos, camLook, now, batchSize)
+    local count = #playerList
+    if count == 0 then return end
+
+    local maxD, showChar, showName, showDist, showInv =
+        flags.maxDist, flags.character, flags.name, flags.distance, flags.inventory
+
+    local maxDSq = maxD * maxD
+
+    for _ = 1, batchSize do
+        playerCursor = playerCursor + 1
+        if playerCursor > count then playerCursor = 1 end
+        local player = playerList[playerCursor]
+        if player then
+            local obj = espObjects[player]
+            local info = infoCache[player]
+            if obj and info then
+                if now >= info.lastRefresh then refreshInfo(player, info, now) end
+                if now >= info.lastItemRefresh then refreshItems(player, info, now) end
+
+                local drew = false
+
+                local root, hum = info.root, info.hum
+                if root and hum and root.Parent and hum.Health > 0 then
+                    local worldPos = root.Position
+                    if worldPos then
+                        local dx = camPos.X - worldPos.X
+                        local dy = camPos.Y - worldPos.Y
+                        local dz = camPos.Z - worldPos.Z
+                        local distSq = dx*dx + dy*dy + dz*dz
+
+                        if distSq <= maxDSq and isInFront(camPos, camLook, worldPos, 20) then
+                            local sp, onScreen = WorldToScreen(worldPos)
+                            if onScreen and sp then
+                                drew = true
+
+                                local dist = math.sqrt(distSq)
+                                local x = sp.X
+                                local y = sp.Y - clamp(1500/max(dist,1), 20, 250)*0.5 - 18
+
+                                if showChar and obj.character then
+                                    setColor(obj.character, info.color)
+                                    setText(obj.character, info.display)
+                                    setPos(obj.character, x, y)
+                                    setVisible(obj.character, true)
+                                    y = y + 16
+                                elseif obj.character then
+                                    setVisible(obj.character, false)
+                                end
+
+                                if showName and obj.name then
+                                    setText(obj.name, info.username)
+                                    setPos(obj.name, x, y)
+                                    setVisible(obj.name, true)
+                                    y = y + 15
+                                elseif obj.name then
+                                    setVisible(obj.name, false)
+                                end
+
+                                if obj.items then
+                                    if showInv and info.itemsText ~= "" then
+                                        setText(obj.items, info.itemsText)
+                                        setPos(obj.items, x, y)
+                                        setVisible(obj.items, true)
+                                        y = y + 13
+                                    else
+                                        setVisible(obj.items, false)
+                                    end
+                                end
+
+                                if showDist and obj.dist then
+                                    local fd = floor(dist)
+                                    if math.abs(fd - info.lastDist) >= DIST_TEXT_MIN_DELTA then
+                                        info.lastDist = fd
+                                        info.distText = fd .. " studs"
+                                    end
+                                    setText(obj.dist, info.distText)
+                                    setPos(obj.dist, x, y)
+                                    setVisible(obj.dist, true)
+                                elseif obj.dist then
+                                    setVisible(obj.dist, false)
+                                end
                             end
-                            setText(obj.dist, info.distText)
-                            setPos(obj.dist, x, y)
-                            setVisible(obj.dist, true)
-                        else setVisible(obj.dist, false) end
+                        end
                     end
                 end
+
+                if not drew then
+                    hidePlayer(obj)
+                end
             end
-            if not visible then hidePlayer(obj) end
         end
     end
 end
-local SCAN_INTERVAL = 1
+
+local SCAN_INTERVAL = 2
+local PLANT_MODELS = {
+    NightshadePlant="Nightshade", WolfsbanePlant="Wolfsbane", YarrowPlant="Yarrow",
+    MooncapPlant="Mooncap", SeniaPlant="Senia", AerpinePlant="Aerpine",
+    DerridaPlant="Derrida", ArcanithPlant="Arcanith", SanguiniaPlant="Sanguinia",
+    PerenniaPlant="Perennia", VampitePlant="Vampite",
+}
+local PLANT_COLORS = {
+    Nightshade = Color3.fromRGB(120, 80, 200),
+    Wolfsbane  = Color3.fromRGB(220, 200, 90),
+    Yarrow     = Color3.fromRGB(170, 200, 240),
+    Mooncap    = Color3.fromRGB(170, 200, 240),
+    Senia      = Color3.fromRGB(100, 180, 140),
+    Aerpine    = Color3.fromRGB(100, 180, 140),
+    Derrida    = Color3.fromRGB(220, 140, 80),
+    Arcanith   = Color3.fromRGB(120, 80, 200),
+    Sanguinia  = Color3.fromRGB(200, 40, 60),
+    Perennia   = Color3.fromRGB(80, 180, 100),
+    Vampite    = Color3.fromRGB(180, 40, 80),
+}
+local PLANT_TEXT_COLOR = Color3.fromRGB(255,255,255)
+local GEM_TEXT_COLOR = Color3.fromRGB(255,255,255)
+local GEM_MODELS = {
+    ClearQuartzGem={name="Clear Quartz",flag="ClearQuartz", color=Color3.fromRGB(190,220,240)},
+    BloodstoneGem={name="Bloodstone",flag="Bloodstone", color=Color3.fromRGB(200,40,60)},
+    BlackCrystalGem={name="Black Crystal",flag="BlackCrystal", color=Color3.fromRGB(120,80,180)},
+    PeridotGem={name="Peridot",flag="Peridot", color=Color3.fromRGB(150,220,90)},
+}
+local BASE_CLASSES = {
+    Part=true, MeshPart=true, UnionOperation=true, NegateOperation=true,
+    WedgePart=true, CornerWedgePart=true, TrussPart=true, SpawnLocation=true,
+    Seat=true, VehicleSeat=true, Platform=true,
+}
 
 local function findPart(model)
+    if not model or not model.Parent then return nil end
     if BASE_CLASSES[model.ClassName] then return model end
     local ok, part = pcall(function() return model:FindFirstChildWhichIsA("BasePart", true) end)
     if ok and part then return part end
-    for _, d in ipairs(model:GetDescendants()) do
-        if BASE_CLASSES[d.ClassName] then return d end
-    end
     return nil
 end
 
@@ -415,25 +601,40 @@ local function getInteractableFolder(name)
     end
 end
 
-local function makeWorldESP(getContainer, resolve, f, textColor)
-    local entries, lastScan = {}, -math.huge
+local function makeWorldESP(getContainer, resolve, f, defaultColor)
+    local entries, entryList = {}, {}
+    local lastScan = -math.huge
+    local cursor = 0
+
+    local function rebuildList()
+        local n = 0
+        for _, e in pairs(entries) do
+            n = n + 1
+            entryList[n] = e
+        end
+        for i = n + 1, #entryList do entryList[i] = nil end
+    end
+
     local function scan(now)
         lastScan = now
         local container = getContainer()
         local seen = {}
         if container then
-            for _, m in ipairs(container:GetChildren()) do
+            local kids = container:GetChildren()
+            for i = 1, #kids do
+                local m = kids[i]
                 seen[m] = true
                 local e = entries[m]
                 if not e then
-                    local label, flag = resolve(m.Name)
-                    if label then
+                    local label, flag, color = resolve(m.Name)
+                    if label and flag then
                         local part = findPart(m)
                         if part then
-                            entries[m] = { part=part, label=label, flag=flag, draw=nil, key=nil, text=nil }
+                            entries[m] = { part=part, label=label, flag=flag,
+                                           color=color or defaultColor, draw=nil, key=nil, text=nil }
                         end
                     end
-                elseif not e.part.Parent then
+                elseif not e.part or not e.part.Parent then
                     local part = findPart(m)
                     if part then e.part = part else seen[m] = nil end
                 end
@@ -441,182 +642,264 @@ local function makeWorldESP(getContainer, resolve, f, textColor)
         end
         for m, e in pairs(entries) do
             if not seen[m] then
-                if e.draw then pcall(function() e.draw:Remove() end) end
+                if e.draw then safeRemove(e.draw) end
                 entries[m] = nil
             end
         end
+        rebuildList()
     end
-    local function update(camPos)
+
+    local function update(camPos, camLook, batchSize)
         local now = tick()
         if now - lastScan >= SCAN_INTERVAL then scan(now) end
-        local maxD, showDist = f.maxDist, f.showDist
-        for _, e in pairs(entries) do
-            local draw = e.draw
-            local show = false
-            if f[e.flag] then
-                local pos = e.part.Position
-                if pos then
-                    local dist = (camPos - pos).Magnitude
-                    if dist <= maxD then
-                        local sp, on = WorldToScreen(pos)
-                        if on and sp then
-                            if not draw then
-                                draw = newText(13)
-                                setColor(draw, textColor)
-                                e.draw = draw
+
+        local count = #entryList
+        if count == 0 then return end
+
+        local maxD = f.maxDist
+        local maxDSq = maxD * maxD
+        local showDist = f.showDist
+
+        for _ = 1, batchSize do
+            cursor = cursor + 1
+            if cursor > count then cursor = 1 end
+            local e = entryList[cursor]
+            if e then
+                local draw = e.draw
+                local show = false
+                if e.flag and f[e.flag] and e.part and e.part.Parent then
+                    local pos = e.part.Position
+                    if pos then
+                        local dx = camPos.X - pos.X
+                        local dy = camPos.Y - pos.Y
+                        local dz = camPos.Z - pos.Z
+                        local distSq = dx*dx + dy*dy + dz*dz
+                        if distSq <= maxDSq and isInFront(camPos, camLook, pos, 50) then
+                            local sp, on = WorldToScreen(pos)
+                            if on and sp then
+                                if not draw then
+                                    draw = newText(13)
+                                    if draw then e.draw = draw end
+                                end
+                                if draw then
+                                    setColor(draw, e.color)
+                                    local dist = math.sqrt(distSq)
+                                    local key = showDist and floor(dist) or -1
+                                    if key ~= e.key then
+                                        e.key = key
+                                        e.text = showDist and (e.label .. " [" .. key .. "]") or e.label
+                                    end
+                                    setText(draw, e.text)
+                                    setPos(draw, sp.X, sp.Y)
+                                    setVisible(draw, true)
+                                    show = true
+                                end
                             end
-                            local key = showDist and floor(dist) or -1
-                            if key ~= e.key then
-                                e.key = key
-                                e.text = showDist and (e.label .. " [" .. key .. "]") or e.label
-                            end
-                            setText(draw, e.text)
-                            setPos(draw, sp.X, sp.Y)
-                            setVisible(draw, true)
-                            show = true
                         end
                     end
                 end
+                if not show and draw then setVisible(draw, false) end
             end
-            if not show and draw then setVisible(draw, false) end
         end
     end
+
     local function hide()
         for _, e in pairs(entries) do
             if e.draw then setVisible(e.draw, false) end
         end
     end
+
     local function reset()
         lastScan = -math.huge
         for _, e in pairs(entries) do
-            if e.draw then pcall(function() e.draw:Remove() end) end
+            if e.draw then safeRemove(e.draw) end
         end
         entries = {}
+        entryList = {}
     end
+
     return update, hide, reset
 end
 
 local updatePlants, hideAllPlants, resetPlants = makeWorldESP(
     getInteractableFolder("Plants"),
-    function(n) local d = PLANT_MODELS[n]; return d, d end,
+    function(n)
+        local d = PLANT_MODELS[n]
+        if d then return d, d, PLANT_COLORS[d] end
+    end,
     plantFlags, PLANT_TEXT_COLOR
 )
 local updateGems, hideAllGems, resetGems = makeWorldESP(
     getInteractableFolder("Gems"),
-    function(n) local g = GEM_MODELS[n]; if g then return g.name, g.flag end end,
+    function(n)
+        local g = GEM_MODELS[n]
+        if g then return g.name, g.flag, g.color end
+    end,
     gemFlags, GEM_TEXT_COLOR
 )
 
-local CURE_GREEN = Color3.fromRGB(80,255,100)
-local CURE_RED = Color3.fromRGB(255,70,70)
+local CURE_GREEN = Color3.fromRGB(0,255,80)
+local CURE_RED = Color3.fromRGB(255,40,40)
+local CURE_RANGE = 1836
+local CURE_RANGE_SQ = CURE_RANGE * CURE_RANGE
 
-local function getCureState()
-    local I = workspace:FindFirstChild("Interactables")
-    if I then
-        local ST = I:FindFirstChild("SilasTomb")
-        if ST then
-            local CB = ST:FindFirstChild("CureBox")
-            if CB then
-                local TC = CB:FindFirstChild("TheCure")
-                if TC then
-                    local ok, pos = pcall(function() return TC.Position end)
-                    if ok and pos and typeof(pos) == "Vector3" then return "ground", pos, nil end
-                end
-            end
-        end
-    end
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= LocalPlayer then
-            local bp = p:FindFirstChild("Backpack")
-            local char = p.Character
-            local hasCure = (bp and bp:FindFirstChild("TheCure")) or (char and char:FindFirstChild("TheCure"))
-            if hasCure then
-                local root = char and char:FindFirstChild("HumanoidRootPart")
-                if root then
-                    local ok, pos = pcall(function() return root.Position end)
-                    if ok and pos and typeof(pos) == "Vector3" then return "taken", pos, p end
-                end
-            end
-        end
-    end
-    return nil, nil, nil
-end
-
-local function hideAllCure()
-    for _, d in pairs(cureObjects) do if d then setVisible(d, false) end end
-end
-
-local cureState, curePos, cureOwner
-local cureKey, cureLabel, cureColor
+local tombPosition = nil
+local tombCheckTime = 0
+local TOMB_RECHECK = 2
+local lastKnownCureState = nil
+local lastCureDraw = nil
 local lastCureKey = nil
 local lastCureCheck = 0
 local CURE_INTERVAL = 0.25
 
-local function updateCure(now)
-    if now - lastCureCheck >= CURE_INTERVAL then
-        lastCureCheck = now
-        cureState, curePos, cureOwner = getCureState()
-        if cureState == "ground" and not lastCureUp and cureFlags.notify then
-            pcall(function() notify("Cure spawned!", "^.^meg tvl", 4) end)
-        end
-        lastCureUp = (cureState == "ground")
-        if cureState == "ground" then
-            cureKey, cureLabel, cureColor = "ground", "Cure", CURE_GREEN
-        elseif cureState == "taken" then
-            cureKey = "taken_" .. tostring(cureOwner)
-            cureLabel = "Cure (" .. cureOwner.Name .. ")"
-            cureColor = CURE_RED
-        else
-            cureKey = nil
+local function getTombPos(box)
+    if not box then return nil end
+    local okP, pos = pcall(function() return box.Position end)
+    if okP and pos and typeof(pos) == "Vector3" then return pos end
+    if box:IsA("Model") then
+        local prim = box.PrimaryPart
+        if prim then
+            local ok2, p2 = pcall(function() return prim.Position end)
+            if ok2 and p2 then return p2 end
         end
     end
-    if lastCureKey ~= cureKey then
-        if lastCureKey and cureObjects[lastCureKey] then
-            local old = cureObjects[lastCureKey]
-            cureObjects[lastCureKey] = nil
-            pcall(function() old:Remove() end)
+    local ok3, desc = pcall(function() return box:GetDescendants() end)
+    if ok3 and desc then
+        for _, d in ipairs(desc) do
+            if d:IsA("BasePart") then
+                local ok4, p4 = pcall(function() return d.Position end)
+                if ok4 and p4 then return p4 end
+            end
         end
-        lastCureKey = cureKey
     end
-    if not cureState or not curePos or not cureKey then hideAllCure(); return end
-    local pos = curePos
-    if cureState == "taken" and cureOwner then
-        local c = cureOwner.Character
-        local root = c and c:FindFirstChild("HumanoidRootPart")
-        if root then pos = root.Position end
-    end
-    local draw = cureObjects[cureKey]
-    if not draw then
-        draw = newText(15)
-        cureObjects[cureKey] = draw
-    end
-    setColor(draw, cureColor)
-    setText(draw, cureLabel)
-    local sp, on = WorldToScreen(pos)
-    if on and sp then
-        setPos(draw, sp.X, sp.Y - 30)
-        setVisible(draw, true)
-    else setVisible(draw, false) end
-    for k, d in pairs(cureObjects) do if k ~= cureKey then setVisible(d, false) end end
+    return nil
 end
+
+local function locateTomb()
+    local I = workspace:FindFirstChild("Interactables")
+    if not I then return nil end
+    local ST = I:FindFirstChild("SilasTomb")
+    if not ST then return nil end
+    local CB = ST:FindFirstChild("CureBox")
+    if not CB then return nil end
+    return getTombPos(CB)
+end
+
+local function getCureState()
+    local now = tick()
+    if not tombPosition or now - tombCheckTime >= TOMB_RECHECK then
+        tombCheckTime = now
+        local pos = locateTomb()
+        if pos then tombPosition = pos end
+    end
+    if not tombPosition then return nil, nil end
+
+    local I = workspace:FindFirstChild("Interactables")
+    local ST = I and I:FindFirstChild("SilasTomb")
+    local CB = ST and ST:FindFirstChild("CureBox")
+
+    if not CB then return lastKnownCureState or "missing", tombPosition end
+    if #CB:GetChildren() == 0 then return lastKnownCureState or "missing", tombPosition end
+
+    local curePart = CB:FindFirstChild("TheCure", true)
+                     or (ST and ST:FindFirstChild("TheCure", true))
+
+    lastKnownCureState = (curePart and curePart.Parent) and "ground" or "missing"
+    return lastKnownCureState, tombPosition
+end
+
+local function hideAllCure()
+    if lastCureDraw then setVisible(lastCureDraw, false) end
+end
+
+local function updateCure(now, camPos)
+    if now - lastCureCheck < CURE_INTERVAL then return end
+    lastCureCheck = now
+
+    local cureState, curePos = getCureState()
+    local newKey = (cureState == "ground" or cureState == "missing") and cureState or nil
+
+    if newKey ~= lastCureKey then
+        if lastCureDraw then
+            safeRemove(lastCureDraw)
+            lastCureDraw = nil
+        end
+        lastCureKey = newKey
+    end
+
+    if not lastCureKey or not curePos then
+        if lastCureDraw then
+            safeRemove(lastCureDraw)
+            lastCureDraw = nil
+        end
+        return
+    end
+
+    if not lastCureDraw then
+        lastCureDraw = newText(18)
+        if not lastCureDraw then return end
+    end
+
+    local dx = camPos.X - curePos.X
+    local dy = camPos.Y - curePos.Y
+    local dz = camPos.Z - curePos.Z
+    if (dx*dx + dy*dy + dz*dz) > CURE_RANGE_SQ then
+        setVisible(lastCureDraw, false)
+        return
+    end
+
+    local label, color
+    if lastCureKey == "ground" then
+        label = "CURE AVAILABLE"
+        color = CURE_GREEN
+    else
+        label = "CURE NOT AVAILABLE"
+        color = CURE_RED
+    end
+
+    setColor(lastCureDraw, color)
+    setText(lastCureDraw, label)
+    local sp, on = WorldToScreen(curePos)
+    if on and sp then
+        setPos(lastCureDraw, sp.X, sp.Y - 30)
+        setVisible(lastCureDraw, true)
+    else
+        setVisible(lastCureDraw, false)
+    end
+end
+
+local resetPlantsGuard = 0
+local resetGemsGuard = 0
+
 local function renderLoop()
     local camera = workspace.CurrentCamera
     if not camera then return end
-    local camPos = camera.CFrame.Position
+    local camCF = camera.CFrame
+    local camPos = camCF.Position
+    local camLook = camCF.LookVector
     local now = tick()
+
     if flags.enabled then
-        local ok = pcall(updatePlayers, camPos, now)
-        if not ok then hideAllESP() end
+        updatePlayersBatch(camPos, camLook, now, PLAYER_BATCH)
     end
+
     if plantFlags.enabled then
-        local ok = pcall(updatePlants, camPos)
-        if not ok then resetPlants() end
+        local ok = pcall(updatePlants, camPos, camLook, WORLD_BATCH)
+        if not ok and now - resetPlantsGuard > 5 then
+            resetPlantsGuard = now
+            resetPlants()
+        end
     end
+
     if gemFlags.enabled then
-        local ok = pcall(updateGems, camPos)
-        if not ok then resetGems() end
+        local ok = pcall(updateGems, camPos, camLook, WORLD_BATCH)
+        if not ok and now - resetGemsGuard > 5 then
+            resetGemsGuard = now
+            resetGems()
+        end
     end
-    if cureFlags.enabled then pcall(updateCure, now) end
+
+    if cureFlags.enabled then pcall(updateCure, now, camPos) end
 end
 
 local renderOK = pcall(function() RunService.RenderStepped:Connect(renderLoop) end)
@@ -631,27 +914,37 @@ end
 
 UI.AddTab("^.^meg tvl", function(tab)
     local esp = tab:Section("Player ESP", "Left")
-    esp:Toggle("tvl_enabled", "Enable ESP", false, function(on) flags.enabled=on; if not on then hideAllESP() end; scheduleSave() end)
+    esp:Toggle("tvl_enabled", "Enable ESP", flags.enabled, function(on) flags.enabled=on; if not on then hideAllESP() end; scheduleSave() end)
     esp:Toggle("tvl_character", "Character Name", flags.character, function(on) flags.character=on; scheduleSave() end)
     esp:Tip("Color-coded by species")
     esp:Toggle("tvl_name", "Username", flags.name, function(on) flags.name=on; scheduleSave() end)
+    esp:Toggle("tvl_inventory", "Inventory", flags.inventory, function(on) flags.inventory=on; scheduleSave() end)
     esp:Toggle("tvl_distance", "Distance", flags.distance, function(on) flags.distance=on; scheduleSave() end)
     esp:SliderInt("tvl_maxdist", "Max Distance", 100, 20000, flags.maxDist, function(v) flags.maxDist=v; scheduleSave() end)
 
     local plants = tab:Section("Plant ESP", "Left")
-    plants:Toggle("tvl_plants_on", "Enable Plant ESP", false, function(on) plantFlags.enabled=on; if not on then hideAllPlants() end; scheduleSave() end)
+    plants:Toggle("tvl_plants_on", "Enable Plant ESP", plantFlags.enabled, function(on) plantFlags.enabled=on; if not on then hideAllPlants() end; scheduleSave() end)
     plants:Toggle("tvl_plants_dist", "Show Distance", plantFlags.showDist, function(on) plantFlags.showDist=on; scheduleSave() end)
     plants:SliderInt("tvl_plants_maxdist", "Max Distance", 100, 10000, plantFlags.maxDist, function(v) plantFlags.maxDist=v; scheduleSave() end)
 
     local gems = tab:Section("Gem ESP", "Left")
-    gems:Toggle("tvl_gems_on", "Enable Gem ESP", false, function(on) gemFlags.enabled=on; if not on then hideAllGems() end; scheduleSave() end)
+    gems:Toggle("tvl_gems_on", "Enable Gem ESP", gemFlags.enabled, function(on) gemFlags.enabled=on; if not on then hideAllGems() end; scheduleSave() end)
     gems:Toggle("tvl_gems_dist", "Show Distance", gemFlags.showDist, function(on) gemFlags.showDist=on; scheduleSave() end)
     gems:SliderInt("tvl_gems_maxdist", "Max Distance", 100, 10000, gemFlags.maxDist, function(v) gemFlags.maxDist=v; scheduleSave() end)
 
     local cure = tab:Section("Cure ESP", "Left")
-    cure:Toggle("tvl_cure_on", "Enable Cure ESP", false, function(on) cureFlags.enabled=on; if not on then hideAllCure() end; scheduleSave() end)
-    cure:Toggle("tvl_cure_notify", "Notify on Spawn", cureFlags.notify, function(on) cureFlags.notify=on; scheduleSave() end)
-    cure:Tip("Green = on ground, Red = taken")
+    cure:Toggle("tvl_cure_on", "Enable Cure ESP", cureFlags.enabled, function(on)
+        cureFlags.enabled = on
+        if not on then hideAllCure() end
+        scheduleSave()
+        if on then
+            notify("Go inside the cave first. Step closer & wait if it doesn't show.", "Cure ESP Info", 8)
+        end
+    end)
+    cure:Tip("Green = available, Red = not available")
+    cure:Button("How to use", function()
+        notify("Go inside the cave first. Step closer & wait if it doesn't show.", "Cure ESP Info", 8)
+    end)
 
     local perPlant = tab:Section("Plants", "Right")
     local plantOrder = {"Nightshade","Wolfsbane","Yarrow","Mooncap","Senia","Aerpine","Derrida","Arcanith","Sanguinia","Perennia","Vampite"}
