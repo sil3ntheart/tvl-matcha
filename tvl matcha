@@ -9,7 +9,10 @@ local plantFlags = { enabled=false, showDist=true, maxDist=3000,
     Aerpine=true, Derrida=true, Arcanith=true, Sanguinia=true, Perennia=true, Vampite=true }
 local gemFlags = { enabled=false, showDist=true, maxDist=3000,
     ClearQuartz=true, Bloodstone=true, BlackCrystal=true, Peridot=true }
-local cureFlags = { enabled=false }
+local pumpkinFlags = { enabled=false, showDist=true, maxDist=20000 }
+local bookFlags    = { enabled=false, showDist=true, maxDist=20000 }
+local mazeFlags    = { enabled=false, showDist=true, maxDist=20000 }
+local soulFlags    = { enabled=false, showDist=true, maxDist=20000 }
 
 local PLAYER_BATCH        = 4
 local WORLD_BATCH         = 8
@@ -75,7 +78,10 @@ local function saveConfig()
     serialize("p_", flags, lines, true)
     serialize("pl_", plantFlags, lines, true)
     serialize("g_", gemFlags, lines, true)
-    serialize("c_", cureFlags, lines, false)
+    serialize("k_", pumpkinFlags, lines, true)
+    serialize("b_", bookFlags, lines, true)
+    serialize("m_", mazeFlags, lines, true)
+    serialize("s_", soulFlags, lines, true)
     local ok, err = pcall(function() writefile(CONFIG_FILE, table.concat(lines, "\n")) end)
     if not ok then warn("[tvl] config save failed:", err) end
 end
@@ -91,7 +97,10 @@ local function loadConfig()
             if key:sub(1,2) == "p_" then target = flags; realKey = key:sub(3)
             elseif key:sub(1,3) == "pl_" then target = plantFlags; realKey = key:sub(4)
             elseif key:sub(1,2) == "g_" then target = gemFlags; realKey = key:sub(3)
-            elseif key:sub(1,2) == "c_" then target = cureFlags; realKey = key:sub(3) end
+            elseif key:sub(1,2) == "k_" then target = pumpkinFlags; realKey = key:sub(3)
+            elseif key:sub(1,2) == "b_" then target = bookFlags; realKey = key:sub(3)
+            elseif key:sub(1,2) == "m_" then target = mazeFlags; realKey = key:sub(3)
+            elseif key:sub(1,2) == "s_" then target = soulFlags; realKey = key:sub(3) end
             if target then
                 if tag == "B" then target[realKey] = (val == "true")
                 elseif tag == "N" then target[realKey] = tonumber(val) or target[realKey] end
@@ -738,138 +747,411 @@ local updateGems, hideAllGems, resetGems = makeWorldESP(
     gemFlags, GEM_TEXT_COLOR
 )
 
-local CURE_GREEN = Color3.fromRGB(0,255,80)
-local CURE_RED = Color3.fromRGB(255,40,40)
-local CURE_RANGE = 1836
-local CURE_RANGE_SQ = CURE_RANGE * CURE_RANGE
+-- BOOK ESP (Winifred Sanderson Quest)
+local BOOK_COLOR = Color3.fromRGB(255, 215, 0) 
+local bookDraws = {}
+local bookList = {}
+local lastBookScan = -math.huge
 
-local tombPosition = nil
-local tombCheckTime = 0
-local TOMB_RECHECK = 2
-local lastKnownCureState = nil
-local lastCureDraw = nil
-local lastCureKey = nil
-local lastCureCheck = 0
-local CURE_INTERVAL = 0.25
+local function scanBooks(now)
+    lastBookScan = now
+    local seen = {}
+    
+    local q = workspace:FindFirstChild("Interactables")
+    local quests = q and q:FindFirstChild("Quests")
+    local winifred = quests and quests:FindFirstChild("WinifredSanderson_26")
+    local physicalBook = workspace:FindFirstChild("Book")
 
-local function getTombPos(box)
-    if not box then return nil end
-    local okP, pos = pcall(function() return box.Position end)
-    if okP and pos and typeof(pos) == "Vector3" then return pos end
-    if box:IsA("Model") then
-        local prim = box.PrimaryPart
-        if prim then
-            local ok2, p2 = pcall(function() return prim.Position end)
-            if ok2 and p2 then return p2 end
+    if winifred then
+        for _, spawnPart in ipairs(winifred:GetChildren()) do
+            if spawnPart:IsA("BasePart") then
+                local isActive = false
+                
+                if physicalBook and physicalBook:IsA("BasePart") then
+                    local dist = (spawnPart.Position - physicalBook.Position).Magnitude
+                    if dist < 10 then
+                        isActive = true
+                    end
+                end
+                
+                if not isActive then
+                    for _, child in ipairs(spawnPart:GetChildren()) do
+                        if child:IsA("BasePart") or child:IsA("MeshPart") then
+                            isActive = true; break
+                        end
+                    end
+                end
+
+                if isActive then
+                    seen[spawnPart] = true
+                    if not bookDraws[spawnPart] then
+                        local d = newText(14)
+                        if d then
+                            setColor(d, BOOK_COLOR)
+                            bookDraws[spawnPart] = { draw=d, key=nil, text=nil, part=spawnPart }
+                        end
+                    end
+                end
+            end
         end
     end
-    local ok3, desc = pcall(function() return box:GetDescendants() end)
-    if ok3 and desc then
-        for _, d in ipairs(desc) do
-            if d:IsA("BasePart") then
-                local ok4, p4 = pcall(function() return d.Position end)
-                if ok4 and p4 then return p4 end
+
+    for obj, e in pairs(bookDraws) do
+        if not seen[obj] or not obj.Parent then
+            if e.draw then safeRemove(e.draw) end
+            bookDraws[obj] = nil
+        end
+    end
+
+    local n = 0
+    for obj in pairs(bookDraws) do n = n + 1; bookList[n] = obj end
+    for i = n + 1, #bookList do bookList[i] = nil end
+end
+
+local function hideAllBooks()
+    for _, e in pairs(bookDraws) do
+        if e.draw then setVisible(e.draw, false) end
+    end
+end
+
+local function resetBooks()
+    lastBookScan = -math.huge
+    for _, e in pairs(bookDraws) do
+        if e.draw then safeRemove(e.draw) end
+    end
+    bookDraws = {}
+    bookList = {}
+end
+
+local bookCursor = 0
+local function updateBooks(camPos, camLook, now, batchSize)
+    if now - lastBookScan >= 0.5 then scanBooks(now) end
+    local count = #bookList
+    if count == 0 then return end
+    
+    local maxD = bookFlags.maxDist
+    local maxDSq = maxD * maxD
+    local showDist = bookFlags.showDist
+    
+    for _ = 1, batchSize do
+        bookCursor = bookCursor + 1
+        if bookCursor > count then bookCursor = 1 end
+        local obj = bookList[bookCursor]
+        if obj then
+            local e = bookDraws[obj]
+            if e and e.draw and e.part and e.part.Parent then
+                local pos = e.part.Position
+                local show = false
+                if pos then
+                    local dx = camPos.X - pos.X
+                    local dy = camPos.Y - pos.Y
+                    local dz = camPos.Z - pos.Z
+                    local distSq = dx*dx + dy*dy + dz*dz
+                    if distSq <= maxDSq and isInFront(camPos, camLook, pos, 50) then
+                        local sp, on = WorldToScreen(pos)
+                        if on and sp then
+                            local dist = math.sqrt(distSq)
+                            local key = showDist and floor(dist) or -1
+                            if key ~= e.key then
+                                e.key = key
+                                e.text = showDist and ("Book [" .. key .. "]") or "Book"
+                            end
+                            setText(e.draw, e.text)
+                            setPos(e.draw, sp.X, sp.Y)
+                            setVisible(e.draw, true)
+                            show = true
+                        end
+                    end
+                end
+                if not show then setVisible(e.draw, false) end
             end
+        end
+    end
+end
+
+-- CORN MAZE ESP
+local MAZE_COLOR = Color3.fromRGB(255, 50, 50)
+local EXIT_COLOR = Color3.fromRGB(50, 255, 50)
+local mazeDraws = {}
+local lastMazeScan = -math.huge
+
+local function scanMaze(now)
+    lastMazeScan = now
+    local seen = {}
+    
+    local function addTarget(obj, label, color)
+        if seen[obj] then return end
+        seen[obj] = true
+        if not mazeDraws[obj] then
+            local d = newText(14)
+            if d then
+                setColor(d, color)
+                mazeDraws[obj] = { draw=d, label=label, key=nil, text=nil }
+            end
+        end
+    end
+
+    -- 1. Scan for moving KillPart hazards (Workspace.[Number])
+    for _, obj in ipairs(workspace:GetChildren()) do
+        if obj:IsA("Model") and obj.Name:match("^%d+$") then
+            local killPart = obj:FindFirstChild("KillPart")
+            if killPart then
+                addTarget(killPart, "Beast", MAZE_COLOR)
+            end
+        end
+    end
+
+    -- 2. Scan for Exit
+    local cornMaze = workspace:FindFirstChild("CornMaze")
+    if cornMaze then
+        local finished = cornMaze:FindFirstChild("Finished")
+        if finished then addTarget(finished, "Exit", EXIT_COLOR) end
+    end
+
+    -- Cleanup
+    for obj, e in pairs(mazeDraws) do
+        if not seen[obj] or not obj.Parent then
+            if e.draw then safeRemove(e.draw) end
+            mazeDraws[obj] = nil
+        end
+    end
+end
+
+local function hideAllMaze()
+    for _, e in pairs(mazeDraws) do
+        if e.draw then setVisible(e.draw, false) end
+    end
+end
+
+local function resetMaze()
+    lastMazeScan = -math.huge
+    for _, e in pairs(mazeDraws) do
+        if e.draw then safeRemove(e.draw) end
+    end
+    mazeDraws = {}
+end
+
+local function updateMaze(camPos, camLook, now, batchSize)
+    if now - lastMazeScan >= 0.5 then scanMaze(now) end
+    local maxD = mazeFlags.maxDist
+    local maxDSq = maxD * maxD
+    local showDist = mazeFlags.showDist
+    for obj, e in pairs(mazeDraws) do
+        if e.draw and obj.Parent then
+            local pos = obj.Position
+            local show = false
+            if pos then
+                local dx = camPos.X - pos.X
+                local dy = camPos.Y - pos.Y
+                local dz = camPos.Z - pos.Z
+                local distSq = dx*dx + dy*dy + dz*dz
+                if distSq <= maxDSq and isInFront(camPos, camLook, pos, 50) then
+                    local sp, on = WorldToScreen(pos)
+                    if on and sp then
+                        local dist = math.sqrt(distSq)
+                        local key = showDist and floor(dist) or -1
+                        if key ~= e.key then
+                            e.key = key
+                            e.text = showDist and (e.label .. " [" .. key .. "]") or e.label
+                        end
+                        setText(e.draw, e.text)
+                        setPos(e.draw, sp.X, sp.Y)
+                        setVisible(e.draw, true)
+                        show = true
+                    end
+                end
+            end
+            if not show then setVisible(e.draw, false) end
+        end
+    end
+end
+
+-- PUMPKIN ESP (Limited Hollowen)
+local PUMPKIN_COLOR = Color3.fromRGB(255, 140, 30)
+local PUMPKIN_LABEL = "Pumpkin"
+local PUMPKIN_SCAN_INTERVAL = 0.5
+
+local DECORATIVE_PARENTS = {
+    HalloweenDecorations = true, HalloweenShop = true, PumpkinPatch = true,
+    PumpkinShop = true, MaskShop = true, PumpkinsHay = true, PumpkinBundle = true,
+    CharacterSelectionArea = true, Houses = true, PurchasableHouses = true,
+    TrickOrTreatDoor = true, Effects = true,
+}
+
+local function isUnderDecorative(obj)
+    local p = obj.Parent
+    local depth = 0
+    while p and depth < 6 do
+        if DECORATIVE_PARENTS[p.Name] then return true end
+        p = p.Parent
+        depth = depth + 1
+    end
+    return false
+end
+
+local function isPickupPumpkin(obj)
+    if not obj or not obj.Parent then return false end
+    if not (obj:IsA("Model") or obj:IsA("MeshPart") or obj:IsA("Part")) then return false end
+    local n = obj.Name
+    if not (n == "Pumpkin" or n == "Candy" or n:lower():find("pumpkin", 1, true)) then return false end
+    if isUnderDecorative(obj) then return false end
+    local top = obj
+    while top.Parent and top.Parent ~= workspace do top = top.Parent end
+    if top.Parent ~= workspace then return false end
+    return true
+end
+
+local pumpkinDraws = {}
+local pumpkinList = {}
+local lastPumpkinScan = -math.huge
+local pumpkinCursor = 0
+
+local function getPumpkinPos(obj)
+    local ok, p = pcall(function() return obj.Position end)
+    if ok and p then return p end
+    if obj:IsA("Model") then
+        local ok2, prim = pcall(function() return obj.PrimaryPart end)
+        if ok2 and prim then
+            local ok3, pp = pcall(function() return prim.Position end)
+            if ok3 and pp then return pp end
+        end
+        local part = findPart(obj)
+        if part then
+            local ok4, pp = pcall(function() return part.Position end)
+            if ok4 and pp then return pp end
         end
     end
     return nil
 end
 
-local function locateTomb()
-    local I = workspace:FindFirstChild("Interactables")
-    if not I then return nil end
-    local ST = I:FindFirstChild("SilasTomb")
-    if not ST then return nil end
-    local CB = ST:FindFirstChild("CureBox")
-    if not CB then return nil end
-    return getTombPos(CB)
-end
-
-local function getCureState()
-    local now = tick()
-    if not tombPosition or now - tombCheckTime >= TOMB_RECHECK then
-        tombCheckTime = now
-        local pos = locateTomb()
-        if pos then tombPosition = pos end
-    end
-    if not tombPosition then return nil, nil end
-
-    local I = workspace:FindFirstChild("Interactables")
-    local ST = I and I:FindFirstChild("SilasTomb")
-    local CB = ST and ST:FindFirstChild("CureBox")
-
-    if not CB then return lastKnownCureState or "missing", tombPosition end
-    if #CB:GetChildren() == 0 then return lastKnownCureState or "missing", tombPosition end
-
-    local curePart = CB:FindFirstChild("TheCure", true)
-                     or (ST and ST:FindFirstChild("TheCure", true))
-
-    lastKnownCureState = (curePart and curePart.Parent) and "ground" or "missing"
-    return lastKnownCureState, tombPosition
-end
-
-local function hideAllCure()
-    if lastCureDraw then setVisible(lastCureDraw, false) end
-end
-
-local function updateCure(now, camPos)
-    if now - lastCureCheck < CURE_INTERVAL then return end
-    lastCureCheck = now
-
-    local cureState, curePos = getCureState()
-    local newKey = (cureState == "ground" or cureState == "missing") and cureState or nil
-
-    if newKey ~= lastCureKey then
-        if lastCureDraw then
-            safeRemove(lastCureDraw)
-            lastCureDraw = nil
+local function scanPumpkins(now)
+    lastPumpkinScan = now
+    local seen = {}
+    local function consider(obj)
+        if seen[obj] then return end
+        if not isPickupPumpkin(obj) then return end
+        seen[obj] = true
+        if not pumpkinDraws[obj] then
+            local d = newText(14)
+            if d then
+                setColor(d, PUMPKIN_COLOR)
+                pumpkinDraws[obj] = { draw=d, key=nil, text=nil }
+            end
         end
-        lastCureKey = newKey
     end
-
-    if not lastCureKey or not curePos then
-        if lastCureDraw then
-            safeRemove(lastCureDraw)
-            lastCureDraw = nil
+    local ok, kids = pcall(function() return workspace:GetChildren() end)
+    if ok and kids then
+        for i = 1, #kids do consider(kids[i]) end
+    end
+    local q = workspace:FindFirstChild("Interactables")
+    if q then
+        local quests = q:FindFirstChild("Quests")
+        if quests then
+            local qk = quests:GetChildren()
+            for i = 1, #qk do
+                if not DECORATIVE_PARENTS[qk[i].Name] then consider(qk[i]) end
+            end
         end
-        return
     end
-
-    if not lastCureDraw then
-        lastCureDraw = newText(18)
-        if not lastCureDraw then return end
+    local qd = workspace:FindFirstChild("QuestDestination")
+    if qd then
+        local qdk = qd:GetChildren()
+        for i = 1, #qdk do
+            if not DECORATIVE_PARENTS[qdk[i].Name] then consider(qdk[i]) end
+        end
     end
-
-    local dx = camPos.X - curePos.X
-    local dy = camPos.Y - curePos.Y
-    local dz = camPos.Z - curePos.Z
-    if (dx*dx + dy*dy + dz*dz) > CURE_RANGE_SQ then
-        setVisible(lastCureDraw, false)
-        return
+    for obj, e in pairs(pumpkinDraws) do
+        if not seen[obj] or not obj.Parent then
+            if e.draw then safeRemove(e.draw) end
+            pumpkinDraws[obj] = nil
+        end
     end
+    local n = 0
+    for obj in pairs(pumpkinDraws) do n = n + 1; pumpkinList[n] = obj end
+    for i = n + 1, #pumpkinList do pumpkinList[i] = nil end
+end
 
-    local label, color
-    if lastCureKey == "ground" then
-        label = "CURE AVAILABLE"
-        color = CURE_GREEN
-    else
-        label = "CURE NOT AVAILABLE"
-        color = CURE_RED
-    end
-
-    setColor(lastCureDraw, color)
-    setText(lastCureDraw, label)
-    local sp, on = WorldToScreen(curePos)
-    if on and sp then
-        setPos(lastCureDraw, sp.X, sp.Y - 30)
-        setVisible(lastCureDraw, true)
-    else
-        setVisible(lastCureDraw, false)
+local function hideAllPumpkins()
+    for _, e in pairs(pumpkinDraws) do
+        if e.draw then setVisible(e.draw, false) end
     end
 end
+
+local function resetPumpkins()
+    lastPumpkinScan = -math.huge
+    for _, e in pairs(pumpkinDraws) do
+        if e.draw then safeRemove(e.draw) end
+    end
+    pumpkinDraws = {}
+    pumpkinList = {}
+end
+
+local function updatePumpkins(camPos, camLook, now, batchSize)
+    if now - lastPumpkinScan >= PUMPKIN_SCAN_INTERVAL then scanPumpkins(now) end
+    local count = #pumpkinList
+    if count == 0 then return end
+    local maxD = pumpkinFlags.maxDist
+    local maxDSq = maxD * maxD
+    local showDist = pumpkinFlags.showDist
+    for _ = 1, batchSize do
+        pumpkinCursor = pumpkinCursor + 1
+        if pumpkinCursor > count then pumpkinCursor = 1 end
+        local obj = pumpkinList[pumpkinCursor]
+        if obj then
+            local e = pumpkinDraws[obj]
+            if e and e.draw then
+                local pos = getPumpkinPos(obj)
+                local show = false
+                if pos and obj.Parent then
+                    local dx = camPos.X - pos.X
+                    local dy = camPos.Y - pos.Y
+                    local dz = camPos.Z - pos.Z
+                    local distSq = dx*dx + dy*dy + dz*dz
+                    if distSq <= maxDSq and isInFront(camPos, camLook, pos, 50) then
+                        local sp, on = WorldToScreen(pos)
+                        if on and sp then
+                            local dist = math.sqrt(distSq)
+                            local key = showDist and floor(dist) or -1
+                            if key ~= e.key then
+                                e.key = key
+                                e.text = showDist and (PUMPKIN_LABEL .. " [" .. key .. "]") or PUMPKIN_LABEL
+                            end
+                            setText(e.draw, e.text)
+                            setPos(e.draw, sp.X, sp.Y)
+                            setVisible(e.draw, true)
+                            show = true
+                        end
+                    end
+                end
+                if not show then setVisible(e.draw, false) end
+            end
+        end
+    end
+end
+
+-- SOUL ESP (Ghost Quest)
+local SOUL_COLOR = Color3.fromRGB(200, 50, 255)
+local function getSoulLocations()
+    local i = workspace:FindFirstChild("Interactables")
+    local q = i and i:FindFirstChild("Quests")
+    local gq = q and q:FindFirstChild("GhostQuest_26")
+    return gq and gq:FindFirstChild("Ghosts")
+end
+
+local updateSouls, hideAllSouls, resetSouls = makeWorldESP(
+    getSoulLocations,
+    function(name)
+        return "Soul", "enabled", SOUL_COLOR
+    end,
+    soulFlags, SOUL_COLOR
+)
 
 local resetPlantsGuard = 0
 local resetGemsGuard = 0
+local resetPumpkinsGuard = 0
+local resetBooksGuard = 0
+local resetMazeGuard = 0
+local resetSoulsGuard = 0
 
 local function renderLoop()
     local camera = workspace.CurrentCamera
@@ -899,7 +1181,37 @@ local function renderLoop()
         end
     end
 
-    if cureFlags.enabled then pcall(updateCure, now, camPos) end
+    if pumpkinFlags.enabled then
+        local ok = pcall(updatePumpkins, camPos, camLook, now, WORLD_BATCH)
+        if not ok and now - resetPumpkinsGuard > 5 then
+            resetPumpkinsGuard = now
+            resetPumpkins()
+        end
+    end
+
+    if bookFlags.enabled then
+        local ok = pcall(updateBooks, camPos, camLook, now, WORLD_BATCH)
+        if not ok and now - resetBooksGuard > 5 then
+            resetBooksGuard = now
+            resetBooks()
+        end
+    end
+
+    if mazeFlags.enabled then
+        local ok = pcall(updateMaze, camPos, camLook, now, WORLD_BATCH)
+        if not ok and now - resetMazeGuard > 5 then
+            resetMazeGuard = now
+            resetMaze()
+        end
+    end
+
+    if soulFlags.enabled then
+        local ok = pcall(updateSouls, camPos, camLook, WORLD_BATCH)
+        if not ok and now - resetSoulsGuard > 5 then
+            resetSoulsGuard = now
+            resetSouls()
+        end
+    end
 end
 
 local renderOK = pcall(function() RunService.RenderStepped:Connect(renderLoop) end)
@@ -932,19 +1244,54 @@ UI.AddTab("^.^meg tvl", function(tab)
     gems:Toggle("tvl_gems_dist", "Show Distance", gemFlags.showDist, function(on) gemFlags.showDist=on; scheduleSave() end)
     gems:SliderInt("tvl_gems_maxdist", "Max Distance", 100, 10000, gemFlags.maxDist, function(v) gemFlags.maxDist=v; scheduleSave() end)
 
-    local cure = tab:Section("Cure ESP", "Left")
-    cure:Toggle("tvl_cure_on", "Enable Cure ESP", cureFlags.enabled, function(on)
-        cureFlags.enabled = on
-        if not on then hideAllCure() end
+    -- LIMITED HOLLOWEN SECTION (Combined)
+    local hollowen = tab:Section("Limited Hollowen", "Left")
+    
+    -- Pumpkin ESP
+    hollowen:Toggle("tvl_pumpkins_on", "Enable Pumpkin ESP", pumpkinFlags.enabled, function(on)
+        pumpkinFlags.enabled = on
+        pumpkinFlags.showDist = true
+        pumpkinFlags.maxDist = 20000
+        if not on then hideAllPumpkins() end
         scheduleSave()
-        if on then
-            notify("Go inside the cave first. Step closer & wait if it doesn't show.", "Cure ESP Info", 8)
-        end
     end)
-    cure:Tip("Green = available, Red = not available")
-    cure:Button("How to use", function()
-        notify("Go inside the cave first. Step closer & wait if it doesn't show.", "Cure ESP Info", 8)
+    hollowen:Tip("Highlights pickup pumpkins during the Halloween quest")
+
+    hollowen:Spacing()
+
+    -- Book ESP
+    hollowen:Toggle("tvl_books_on", "Enable Book ESP", bookFlags.enabled, function(on)
+        bookFlags.enabled = on
+        bookFlags.showDist = true
+        bookFlags.maxDist = 20000
+        if not on then hideAllBooks() end
+        scheduleSave()
     end)
+    hollowen:Tip("Highlights the exact Grimoire spawn points for the Sanderson quest")
+
+    hollowen:Spacing()
+
+    -- Corn Maze ESP
+    hollowen:Toggle("tvl_maze_on", "Enable Corn Maze ESP", mazeFlags.enabled, function(on)
+        mazeFlags.enabled = on
+        mazeFlags.showDist = true
+        mazeFlags.maxDist = 20000
+        if not on then hideAllMaze() end
+        scheduleSave()
+    end)
+    hollowen:Tip("Shows Beast (Red) and Exit (Green)")
+
+    hollowen:Spacing()
+
+    -- Soul ESP
+    hollowen:Toggle("tvl_souls_on", "Enable Soul ESP", soulFlags.enabled, function(on)
+        soulFlags.enabled = on
+        soulFlags.showDist = true
+        soulFlags.maxDist = 20000
+        if not on then hideAllSouls() end
+        scheduleSave()
+    end)
+    hollowen:Tip("Shows all moving Soul locations for the Ghost Quest")
 
     local perPlant = tab:Section("Plants", "Right")
     local plantOrder = {"Nightshade","Wolfsbane","Yarrow","Mooncap","Senia","Aerpine","Derrida","Arcanith","Sanguinia","Perennia","Vampite"}
