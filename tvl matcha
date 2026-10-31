@@ -13,6 +13,7 @@ local pumpkinFlags = { enabled=false, showDist=true, maxDist=20000 }
 local bookFlags    = { enabled=false, showDist=true, maxDist=20000 }
 local mazeFlags    = { enabled=false, showDist=true, maxDist=20000 }
 local soulFlags    = { enabled=false, showDist=true, maxDist=20000 }
+local crowFlags    = { enabled=false, showDist=true, maxDist=20000 } -- [CROW ESP]
 
 local PLAYER_BATCH        = 4
 local WORLD_BATCH         = 8
@@ -82,6 +83,7 @@ local function saveConfig()
     serialize("b_", bookFlags, lines, true)
     serialize("m_", mazeFlags, lines, true)
     serialize("s_", soulFlags, lines, true)
+    serialize("c_", crowFlags, lines, true) -- [CROW ESP]
     local ok, err = pcall(function() writefile(CONFIG_FILE, table.concat(lines, "\n")) end)
     if not ok then warn("[tvl] config save failed:", err) end
 end
@@ -100,7 +102,9 @@ local function loadConfig()
             elseif key:sub(1,2) == "k_" then target = pumpkinFlags; realKey = key:sub(3)
             elseif key:sub(1,2) == "b_" then target = bookFlags; realKey = key:sub(3)
             elseif key:sub(1,2) == "m_" then target = mazeFlags; realKey = key:sub(3)
-            elseif key:sub(1,2) == "s_" then target = soulFlags; realKey = key:sub(3) end
+            elseif key:sub(1,2) == "s_" then target = soulFlags; realKey = key:sub(3)
+            elseif key:sub(1,2) == "c_" then target = crowFlags; realKey = key:sub(3) -- [CROW ESP]
+            end
             if target then
                 if tag == "B" then target[realKey] = (val == "true")
                 elseif tag == "N" then target[realKey] = tonumber(val) or target[realKey] end
@@ -334,7 +338,6 @@ local function removeAll(tbl)
     if not tbl then return end
     for _,d in pairs(tbl) do if d then safeRemove(d) end end
 end
-
 local espObjects, infoCache = {}, {}
 local playerList = {}
 local INFO_REFRESH = 0.5
@@ -729,7 +732,6 @@ local function makeWorldESP(getContainer, resolve, f, defaultColor)
 
     return update, hide, reset
 end
-
 local updatePlants, hideAllPlants, resetPlants = makeWorldESP(
     getInteractableFolder("Plants"),
     function(n)
@@ -1128,7 +1130,6 @@ local function updatePumpkins(camPos, camLook, now, batchSize)
         end
     end
 end
-
 -- SOUL ESP (Ghost Quest)
 local SOUL_COLOR = Color3.fromRGB(200, 50, 255)
 local function getSoulLocations()
@@ -1146,12 +1147,36 @@ local updateSouls, hideAllSouls, resetSouls = makeWorldESP(
     soulFlags, SOUL_COLOR
 )
 
+-- CROW ESP (Crow Quest - Halloween) -- [CROW ESP]
+local CROW_COLOR = Color3.fromRGB(0, 255, 127)
+local CROW_LABEL = "Crow"
+
+local function getCrowLocations()
+    local i = workspace:FindFirstChild("Interactables")
+    local q = i and i:FindFirstChild("Quests")
+    return q and q:FindFirstChild("CrowQuest_26")
+end
+
+local function resolveCrow(name)
+    if tonumber(name) then
+        return CROW_LABEL, "enabled", CROW_COLOR
+    end
+    return nil
+end
+
+local updateCrows, hideAllCrows, resetCrows = makeWorldESP(
+    getCrowLocations,
+    resolveCrow,
+    crowFlags, CROW_COLOR
+)
+
 local resetPlantsGuard = 0
 local resetGemsGuard = 0
 local resetPumpkinsGuard = 0
 local resetBooksGuard = 0
 local resetMazeGuard = 0
 local resetSoulsGuard = 0
+local resetCrowsGuard = 0 -- [CROW ESP]
 
 local function renderLoop()
     local camera = workspace.CurrentCamera
@@ -1212,6 +1237,14 @@ local function renderLoop()
             resetSouls()
         end
     end
+
+    if crowFlags.enabled then -- [CROW ESP]
+        local ok = pcall(updateCrows, camPos, camLook, WORLD_BATCH)
+        if not ok and now - resetCrowsGuard > 5 then
+            resetCrowsGuard = now
+            resetCrows()
+        end
+    end
 end
 
 local renderOK = pcall(function() RunService.RenderStepped:Connect(renderLoop) end)
@@ -1223,7 +1256,6 @@ if not renderOK then
         end
     end)
 end
-
 UI.AddTab("^.^meg tvl", function(tab)
     local esp = tab:Section("Player ESP", "Left")
     esp:Toggle("tvl_enabled", "Enable ESP", flags.enabled, function(on) flags.enabled=on; if not on then hideAllESP() end; scheduleSave() end)
@@ -1292,6 +1324,18 @@ UI.AddTab("^.^meg tvl", function(tab)
         scheduleSave()
     end)
     hollowen:Tip("Shows all moving Soul locations for the Ghost Quest")
+
+    hollowen:Spacing()
+
+    -- Crow ESP -- [CROW ESP]
+    hollowen:Toggle("tvl_crows_on", "Enable Crow ESP", crowFlags.enabled, function(on)
+        crowFlags.enabled = on
+        crowFlags.showDist = true
+        crowFlags.maxDist = 20000
+        if not on then hideAllCrows() end
+        scheduleSave()
+    end)
+    hollowen:Tip("Highlights Crow Quest spawn locations")
 
     local perPlant = tab:Section("Plants", "Right")
     local plantOrder = {"Nightshade","Wolfsbane","Yarrow","Mooncap","Senia","Aerpine","Derrida","Arcanith","Sanguinia","Perennia","Vampite"}
