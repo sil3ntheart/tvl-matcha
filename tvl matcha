@@ -57,6 +57,7 @@ local function safeNewText(size)
     t.Size = size or 14
     t.Center = true
     t.Outline = true
+    t.Font = Drawing.Fonts.SystemBold -- FONT CHANGED HERE
     t.Visible = false
     return t
 end
